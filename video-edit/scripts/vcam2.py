@@ -145,8 +145,8 @@ def boots(src):
     ZMAX, ZEND, P0 = 12.0, 1.04, BAR - 2 * BEAT
     anchorA = (0.444 * OW, 0.661 * OH)
     A = Clip(f"{src}/IMG_4278.MOV", 0.0, 3.0)
-    # 4306: arrives fast (speed-ramp out of the black), slows to 0.35x while the pair is still, then real time
-    vB = lambda t: lerp(1.6, 0.35, ease_out(c01(t / 0.25))) if t < 0.25 else 0.35 + 0.65 * (lambda p: p * p * (3 - 2 * p))(c01((t - 0.25) / 0.9))
+    # 4306: leaves the black at real speed (boot still in place), surges to 2.4x, settles back to 1x
+    vB = lambda t: lerp(1.0, 2.4, ease_in(c01(t / 0.35))) if t < 0.35 else lerp(2.4, 1.0, ease_out(c01((t - 0.35) / 1.0)))
     sB = remap(vB, n)
     B = Clip(f"{src}/IMG_4306.MOV", 0.0, 3.9)
     track = [(0.0, 418, 1340), (0.067, 408, 1358), (0.133, 394, 1374), (0.2, 378, 1394)]
@@ -158,7 +158,7 @@ def boots(src):
         return ZMAX ** ease_in(p), anchorA, anchorA
 
     def camB(t):
-        p = c01(t / (2 * BEAT))
+        p = c01(t / BEAT)
         z = ZEND * (ZMAX / ZEND) ** ((1 - p) ** 2)
         st = min(sB(t), 0.2)
         P = (float(np.interp(st, tt, tx)), float(np.interp(st, tt, ty)))
