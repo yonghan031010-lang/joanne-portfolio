@@ -1,8 +1,8 @@
 """C v2: the Oxford arch (IMG_4499) becomes a window onto the Great Hall (IMG_4500), 8 beats.
 
   beats 0-2  IMG_4499 slow push, the courtyard through the arch
-  beat 2     inside the pointed arch the courtyard becomes the Great Hall (it settles in with a small
-             scale bounce); people standing in front of the arch stay on top
+  beat 2     glow bounce-in: a window in the shape of the arch springs open from its centre with a
+             soft white rim, the Great Hall inside it; people standing in front of the arch stay on top
   beats 2-5  push through the arch; the hall, being "far", grows slower than the stone (parallax)
   beat 5     the arch leaves frame — we are in the hall
   beats 5-8  tilt up with a slight roll onto the hammerbeam ceiling and the great window
@@ -20,6 +20,7 @@ from golden import film
 ARCH = [(0.50, 0.146), (0.42, 0.155), (0.33, 0.178), (0.25, 0.208), (0.20, 0.245), (0.183, 0.29),
         (0.188, 0.45), (0.205, 0.60), (0.218, 0.682), (0.825, 0.682), (0.832, 0.55), (0.818, 0.30),
         (0.80, 0.25), (0.75, 0.208), (0.67, 0.176), (0.58, 0.152)]
+NOT_FRONT = (0.27, 0.43, 0.585)   # backpack man standing on the threshold: x range, above this row he is not "front"
 THRESH = 0.74                # only people clearly on our side of the threshold stay on top
 CAM = (0.50, 0.42)           # we push toward the middle of the opening
 
@@ -38,24 +39,37 @@ def arch_mask(w, h):
     return cv2.GaussianBlur(m.astype(np.float32), (0, 0), 2.5)
 
 
-def front_people(frame, seg):
+def person_prob(frame, seg):
     r = seg.segment(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame)))
-    m = (np.squeeze(r.category_mask.numpy_view()) > 0).astype(np.uint8)
-    h = m.shape[0]
-    n, lab, st, _ = cv2.connectedComponentsWithStats(m)
-    keep = np.zeros_like(m)
-    for k in range(1, n):
-        bottom = st[k, cv2.CC_STAT_TOP] + st[k, cv2.CC_STAT_HEIGHT]
-        if bottom > THRESH * h and st[k, cv2.CC_STAT_AREA] > 400:
-            keep[lab == k] = 1
-    return cv2.GaussianBlur(keep.astype(np.float32), (0, 0), 1.5)
+    return (np.squeeze(r.category_mask.numpy_view()) > 0).astype(np.float32)
+
+
+def front_people(probs):
+    """People clearly on our side of the threshold, temporally steadied, with clean edges."""
+    out = []
+    for i in range(len(probs)):
+        m = (np.mean(probs[max(i - 1, 0):i + 2], 0) > 0.5).astype(np.uint8)    # 3-frame vote: no flicker
+        h = m.shape[0]
+        core = cv2.erode(m, np.ones((9, 9), np.uint8))                          # split people who touch
+        n, lab, st, _ = cv2.connectedComponentsWithStats(core)
+        keep = np.zeros_like(m)
+        for k in range(1, n):
+            bottom = st[k, cv2.CC_STAT_TOP] + st[k, cv2.CC_STAT_HEIGHT]
+            if bottom > THRESH * h and st[k, cv2.CC_STAT_AREA] > 600:
+                keep[lab == k] = 1
+        keep = cv2.dilate(keep, np.ones((9, 9), np.uint8)) & m                  # back to the true outline
+        keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        w = keep.shape[1]
+        keep[:int(NOT_FRONT[2] * h), int(NOT_FRONT[0] * w):int(NOT_FRONT[1] * w)] = 0   # his feet touch her head
+        out.append(cv2.GaussianBlur(keep.astype(np.float32), (0, 0), 1.2))
+    return out
 
 
 def main(src, out):
     A = Clip(f"{src}/IMG_4499.MOV", 0.3, 2.6)
     B = Clip(f"{src}/IMG_4500.MOV", 2.0, 4.7)
     seg = segmenter()
-    front = [front_people(f, seg) for f in A.f]
+    front = front_people([person_prob(f, seg) for f in A.f])
     am = arch_mask(A.w, A.h)
     BT = [k * BEAT for k in range(9)]
     n = round(BT[8] * FPS)
@@ -69,10 +83,19 @@ def main(src, out):
         thru = ease_in(c01((t - BT[2]) / (BT[5] - BT[2])))
         return slow * lerp(1.0, ZA_END / 1.10, thru)
 
+    AC = (0.51, 0.45)                                              # centre of the arch opening (source)
+
+    def window(t):
+        """Arch-shaped window springing open from its centre (overshoots, clipped by the real arch)."""
+        k = spring((t - (BT[2] - 0.05)) / 0.55)
+        sc = max(lerp(0.0, 1.0, k), 0.0)
+        M = cv2.getRotationMatrix2D((AC[0] * A.w, AC[1] * A.h), 0, max(sc, 1e-3))
+        return np.minimum(cv2.warpAffine(am, M, (A.w, A.h)), am * 1.0), cv2.warpAffine(am, M, (A.w, A.h))
+
     def hall_cam(t):
         """Hall framing inside the window → continues after the arch is gone."""
         k = spring((t - BT[2]) / 0.6)
-        z = lerp(1.25, 1.0, k) * lerp(1.0, 1.12, smooth((t - BT[2]) / (BT[5] - BT[2])))
+        z = lerp(1.15, 1.0, k) * lerp(1.0, 1.12, smooth((t - BT[2]) / (BT[5] - BT[2])))
         up = smooth((t - BT[5]) / (BT[8] - BT[5]))
         z = z + 0.18 * up
         return view(B.at(sB(t)), 0.5, lerp(0.42, 0.24, up), z, 0.5, lerp(0.45, 0.40, up), -8.0 * up)
@@ -82,17 +105,22 @@ def main(src, out):
             return hall_cam(t)
         z = zA(t)
         a = view(A.at(sA(t)), CAM[0], CAM[1], z, 0.5, CAM[1], 0.0)
-        if t < BT[2] - 0.03:
+        if t < BT[2] - 0.05:
             return a
-        win = view(am[..., None].repeat(3, 2), CAM[0], CAM[1], z, 0.5, CAM[1], 0.0)[..., :1]
-        fp = view(front[iA(t)][..., None].repeat(3, 2), CAM[0], CAM[1], z, 0.5, CAM[1], 0.0)[..., :1]
-        open_ = smooth((t - (BT[2] - 0.03)) / 0.10)
-        w = win * (1 - fp) * open_
+        wm, raw = window(t)
+        V = lambda m: view(m[..., None].repeat(3, 2), CAM[0], CAM[1], z, 0.5, CAM[1], 0.0)[..., :1]
+        win, rawv = V(wm), V(raw)
+        fp = V(front[iA(t)])
+        w = win * (1 - fp)
         h = hall_cam(t)
-        # light from the hall spilling onto the stone just around the opening
-        spill = np.clip(cv2.GaussianBlur(win[..., 0], (0, 0), 20)[..., None] - win, 0, 1) * open_
-        a = a * (1 - 0.25 * spill) + cv2.GaussianBlur(h, (0, 0), 25) * 0.25 * spill
-        return a * (1 - w) + h * w
+        # soft white glow hugging the growing window, fading once it has settled
+        fade = 1 - smooth((t - (BT[2] + 0.25)) / 0.45)
+        halo = cv2.GaussianBlur(rawv[..., 0], (0, 0), 16)[..., None]
+        glow = np.clip(halo - rawv, 0, 1) * 1.6 * fade
+        rim = np.clip(cv2.GaussianBlur(rawv[..., 0], (0, 0), 3)[..., None] - rawv, 0, 1) * 2.5 * fade
+        img = a * (1 - w) + h * w
+        img = img + (glow * 0.55 + rim * 0.6) * np.float32([255, 248, 238]) * (1 - fp)
+        return img
 
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
