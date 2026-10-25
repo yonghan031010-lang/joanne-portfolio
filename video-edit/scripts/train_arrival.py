@@ -120,15 +120,24 @@ def main(src, out, debug=None):
         a = view(A.at(sA(t)), 0.5, 0.5, 1.08, 0.5, 0.5, 0.0)
         mk = view(masks[i][..., None].repeat(3, 2), 0.5, 0.5, 1.08, 0.5, 0.5, 0.0)[..., :1] * BODY
         g = 1 + (gain - 1) * (1 - ease_out(c01((t - T_OUT) / 0.6)))
-        b = view(B.at(sB(t)), 0.5, 0.5, 1.08, 0.5, 0.5, 0.0) * g
+        # background panned and streaked like the same camera following the train, easing out after it leaves
+        follow = 1 - ease_out(c01((t - T_OUT) / 0.45))
+        pan = -0.10 * ease_out(c01((t - BT[2]) / (T_OUT + 0.45 - BT[2])))       # camera tracks right → world slides left
+        b = view(B.at(sB(t)), 0.5, 0.5, 1.12, 0.5 + pan, 0.5, 0.0) * g
+        bw = int(85 * follow * c01((t - BT[2]) / 0.12))
+        if bw > 3:
+            b = cv2.blur(b, (bw, 1))
         # behind the nose the world is already the new platform
         nx = (0.5 + (nose[i] - 0.5) * 1.08) * OW
         behind = np.clip((nx - XS) / 40 + 0.5, 0, 1) * c01((t - BT[2]) / 0.08)
         bg = a * (1 - behind) + b * behind
         # train leaves on the beat: fades out of its matte as it streaks
         leave = ease_in(c01((t - (T_OUT - 0.18)) / 0.25))
-        tm = mk * (1 - leave)
-        return bg * (1 - tm) + a * tm, leave
+        tm = cv2.GaussianBlur(mk, (0, 0), 6)[..., None] * (1 - leave)
+        edge = np.clip(tm * (1 - tm) * 4, 0, 1)                    # band where train meets background
+        wrap = cv2.GaussianBlur(bg, (0, 0), 18)                      # background light bleeding onto the train edge
+        train = a * (1 - 0.35 * edge) + wrap * 0.35 * edge
+        return bg * (1 - tm) + train * tm, leave
 
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
