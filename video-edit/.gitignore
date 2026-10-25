@@ -1,0 +1,8 @@
+source/
+renders/
+*.MOV
+*.mov
+*.mp4
+
+*.wav
+__pycache__/
