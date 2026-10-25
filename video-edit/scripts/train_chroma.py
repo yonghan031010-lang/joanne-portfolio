@@ -24,17 +24,18 @@ CYAN = np.float32([60, 230, 255])
 def silhouette(img, m, k):
     """White fill + chromatic fringe (purple outside-left, cyan outside-right); k = strength 0..1."""
     m = cv2.GaussianBlur(m, (0, 0), 2.0)
-    sh = 22
+    sh = 34
     ml = np.zeros_like(m); ml[:, :-sh] = m[:, sh:]               # shifted copies, no wrap-around
     mr = np.zeros_like(m); mr[:, sh:] = m[:, :-sh]
     halo = cv2.GaussianBlur(m, (0, 0), 10)
     fp = np.clip(ml - m, 0, 1)[..., None]; fc = np.clip(mr - m, 0, 1)[..., None]
     glow = np.clip(halo - m, 0, 1)[..., None]
+    bloom = np.clip(cv2.GaussianBlur(m, (0, 0), 45) * 1.5 - m, 0, 1)[..., None]   # wide soft light spilling past the edge
     mm = m[..., None]
-    out = img * (1 - k * mm) + 245 * k * mm
+    out = img * (1 - 0.35 * k) * (1 - k * mm) + 250 * k * mm         # dim the world so the light pops
     out = out * (1 - k * fp) + PURPLE * k * fp
     out = out * (1 - k * fc) + CYAN * k * fc
-    return out + glow * k * PURPLE * 0.9
+    return out + glow * k * PURPLE * 1.8 + bloom * k * (PURPLE * 0.7 + CYAN * 0.3) * 1.1
 
 
 def rgb_split(img, d):
