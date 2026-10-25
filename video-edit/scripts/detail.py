@@ -4,10 +4,12 @@ Each outfit plays for 7 beats (≈5s). Beat 1 is clean, then one detail pops in 
 beats 2-5 and holds to the end. Boxes follow the garment with
 optical-flow tracking; insets are cropped live from the full-resolution source.
 
-usage: python3 detail.py <source_dir> <out.mp4>
+usage: python3 detail.py <source_dir> <out.mp4>              (all OUTFITS, back to back)
+       python3 detail.py <source_dir> <out.mp4> <callout.json>  (one clip, labels under insets)
 """
 import sys, subprocess, json, math
 import numpy as np, cv2
+from PIL import Image, ImageDraw, ImageFont
 from vcam import OW, OH, FPS, BEAT, BAR, grade, c01, ease_out
 
 # (clip, start s, speed, colour RGB, [(name, cx, cy, w, h) in frame fractions at start])
@@ -31,6 +33,24 @@ OUTFITS = [
 SEG = 7 * BEAT          # ≈5.06s per outfit, so every cut still lands on a beat
 INSET_W = 0.32
 LINE = 3
+LABEL_H = 0.028                        # room under an inset for its name
+FONT = ImageFont.truetype("/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf", 33)  # Helvetica metrics
+
+
+def load_config(path):
+    c = json.load(open(path))
+    boxes = [(it["label"], it["cx"], it["cy"], it["w"], it["h"]) for it in c["items"]]
+    return [(c["clip"], c["start"], c["speed"], tuple(c["color"]), boxes)], c["beats"] * BEAT, True
+
+
+def draw_label(img, text, x, y, w, col, a):
+    """Small caps-free Helvetica-style caption centred under an inset."""
+    im = Image.fromarray(img); ov = Image.new("RGBA", im.size, (0, 0, 0, 0)); d = ImageDraw.Draw(ov)
+    tw = d.textlength(text, font=FONT)
+    tx, ty = x + (w - tw) / 2, y + 8
+    d.text((tx + 1.5, ty + 1.5), text, font=FONT, fill=(0, 0, 0, int(170 * a)))
+    d.text((tx, ty), text, font=FONT, fill=(*col, int(255 * a)))
+    img[:] = np.asarray(Image.alpha_composite(im.convert("RGBA"), ov).convert("RGB"))
 
 
 def probe(path):
@@ -88,20 +108,21 @@ def track(path, ss, dur, boxes):
     return out
 
 
-def place_insets(boxes):
+def place_insets(boxes, label=False):
     """Greedy slot choice: minimise overlap with every box and earlier insets."""
-    cands = [(x, y) for x in (0.03, 0.65) for y in np.arange(0.04, 0.80, 0.02)]
+    cands = [(x, y) for x in (0.03, 0.65) for y in np.arange(0.04, 0.78, 0.01)]
     taken, res = [], []
     rects = [(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2) for _, cx, cy, w, h in boxes]
     for (_, cx, cy, w, h) in boxes:
         iw = INSET_W; ih = min(iw * (h * OH) / (w * OW) * OW / OH, 0.22)
+        lh = LABEL_H if label else 0
         def cost(c):
-            r = (c[0], c[1], c[0] + iw, c[1] + ih)
+            r = (c[0], c[1], c[0] + iw, c[1] + ih + lh)
             ov = lambda a, b: max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
             side = 0.02 if (c[0] < 0.5) == (cx < 0.5) else 0.0          # prefer the opposite side
             return sum(ov(r, q) for q in rects) * 4 + sum(ov(r, q) for q in taken) * 40 + side + abs(c[1] + ih / 2 - cy) * 0.05
         c = min(cands, key=cost)
-        taken.append((c[0], c[1], c[0] + iw, c[1] + ih)); res.append((c[0], c[1], iw, ih))
+        taken.append((c[0], c[1], c[0] + iw, c[1] + ih + lh)); res.append((c[0], c[1], iw, ih))
     return res
 
 
@@ -122,19 +143,20 @@ def pop(t):
     return p, 1 + 0.12 * math.sin(p * math.pi) * (1 - p * 0.4) - 0.12 * (1 - p)
 
 
-def render(src, out):
+def render(src, out, outfits=None, seg=None, labels=False):
+    outfits = outfits or OUTFITS; seg = seg or SEG
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
                             "-pix_fmt", "yuv420p", out], stdin=subprocess.PIPE)
     total = 0
-    for o, (clip, ss, speed, col, boxes) in enumerate(OUTFITS):
+    for o, (clip, ss, speed, col, boxes) in enumerate(outfits):
         path = f"{src}/{clip}.MOV"
-        dur = SEG * speed + 0.3
+        dur = seg * speed + 0.3
         paths = track(path, ss, dur, boxes)
         frames = list(decode(path, ss, dur))
         H, W = frames[0].shape[:2]
-        insets = place_insets(boxes)
-        n = round((o + 1) * SEG * FPS) - round(o * SEG * FPS)
+        insets = place_insets(boxes, labels)
+        n = round((o + 1) * seg * FPS) - round(o * seg * FPS)
         for i in range(n):
             t = i / FPS
             si = min(round(t * speed * FPS), len(frames) - 1)
@@ -173,6 +195,8 @@ def render(src, out):
                 sh = img[min(y0c + 8, OH - 1):min(y1c + 8, OH), min(x0c + 8, OW - 1):min(x1c + 8, OW)]
                 sh[:] = (sh * (1 - 0.25 * a)).astype(np.uint8)
                 region[:] = (region * (1 - a) + p * a).astype(np.uint8)
+                if labels:
+                    draw_label(img, name, ix * OW, iy * OH + ih * OH, iw * OW, col, a)
             enc.stdin.write(grade(img.astype(np.float32)).tobytes())
             total += 1
         print(clip, n, "frames; insets", [tuple(round(v, 2) for v in r) for r in insets], flush=True)
@@ -181,4 +205,8 @@ def render(src, out):
 
 
 if __name__ == "__main__":
-    render(sys.argv[1], sys.argv[2])
+    if len(sys.argv) > 3:
+        outfits, seg, labels = load_config(sys.argv[3])
+        render(sys.argv[1], sys.argv[2], outfits, seg, labels)
+    else:
+        render(sys.argv[1], sys.argv[2])
