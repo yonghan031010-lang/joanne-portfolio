@@ -62,8 +62,16 @@ ITEM_OPTS = None      # per item: keys [[t, cx, cy]...] (manual path, source-rel
                       # freeze t (inset holds the frame at t), box_off t (box fades out after t)
 
 
+LINE_GAP = 8
+
+
 def tag_width(text):
-    return int(FONT.getlength(text)) + 2 * TAG_PAD
+    return max(int(FONT.getlength(t)) for t in text.split("\n")) + 2 * TAG_PAD
+
+
+def tag_height(text):
+    n = text.count("\n") + 1
+    return TAG_H + (n - 1) * (16 + LINE_GAP)
 
 
 def draw_tags(img, tags):
@@ -74,12 +82,13 @@ def draw_tags(img, tags):
     im = Image.fromarray(img).convert("RGBA"); ov = Image.new("RGBA", im.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(ov); d.fontmode = "1"                   # no anti-aliasing: hard pixel edges
     for text, x, yb, col, a in tags:
-        w = tag_width(text)
-        x = int(min(max(x, 0), OW - w)); y = int(yb - TAG_H)
+        w, h = tag_width(text), tag_height(text)
+        x = int(min(max(x, 0), OW - w)); y = int(yb - h)
         if y < 0:                                                  # no room above: tuck inside the box
             y = int(yb)
-        d.rectangle([x, y, x + w, y + TAG_H], fill=(*col, int(255 * a)))
-        d.text((x + TAG_PAD, y + TAG_PAD), text, font=FONT, fill=(255, 255, 255, int(255 * a)))
+        d.rectangle([x, y, x + w, y + h], fill=(*col, int(255 * a)))
+        for li, line in enumerate(text.split("\n")):
+            d.text((x + TAG_PAD, y + TAG_PAD + li * (16 + LINE_GAP)), line, font=FONT, fill=(255, 255, 255, int(255 * a)))
     img[:] = np.asarray(Image.alpha_composite(im, ov).convert("RGB"))
 
 
