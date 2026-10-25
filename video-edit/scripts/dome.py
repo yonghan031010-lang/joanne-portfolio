@@ -129,6 +129,8 @@ def main(src, out):
     fars = [x[0] for x in fm]
     her = her_track([x[1] for x in fm], HER)
     dome = track_dome(A.f, round((1.5 - A.ss) * FPS), DOME_A[0], DOME_A[1])
+    domeB = track_dome(B.f, round((1.0 - B.ss) * FPS), DOME_B[0], DOME_B[1], size=0.16)
+    print("IMG_4781 dome x %.2f–%.2f y %.2f–%.2f" % (domeB[:, 0].min(), domeB[:, 0].max(), domeB[:, 1].min(), domeB[:, 1].max()))
     print("dome path x %.2f–%.2f y %.2f–%.2f scale %.2f–%.2f" % (dome[:, 0].min(), dome[:, 0].max(), dome[:, 1].min(),
           dome[:, 1].max(), dome[:, 2].min(), dome[:, 2].max()), flush=True)
     T1, TC, END = BEAT, 2 * BEAT, 4 * BEAT
@@ -150,39 +152,50 @@ def main(src, out):
                             "-pix_fmt", "yuv420p", out], stdin=subprocess.PIPE)
     for i in range(n):
         t = i / FPS
-        K = 12 if abs(t - TC) < 0.35 else 3
-        sh = 0.5 + 1.2 * math.exp(-((t - TC) / 0.18) ** 2)      # longer shutter only while spinning
+        K = 16 if abs(t - TC) < 0.3 else 3
+        sh = 0.5 + 1.8 * math.exp(-((t - TC) / 0.15) ** 2)      # longer shutter only while spinning
         acc = np.zeros((OH, OW, 3), np.float32)
         for j in range(K):
             tj = t + (j / max(K - 1, 1) - 0.5) * sh / FPS
-            if tj < TC:
+            def side_a(tj):
                 si = min(max(round((sA(tj) - A.ss) * FPS), 0), len(A.f) - 1)
                 fr = A.f[si].astype(np.float32)
                 p1 = ease_in(c01(tj / T1)); p2 = c01((tj - T1) / (TC - T1))
-                # 1) push in on her  2) rack focus + travel to the dome
                 hx, hy = her[si]; dx, dy, ds = dome[si]
                 if tj < T1:
                     z, c, near_b, far_b = lerp(1.0, 1.6, p1), (hx, hy), 0.0, 6.0
-                    s = (hx, hy)
+                    s_ = (hx, hy)
                 else:
                     e = (lambda p: p * p * (3 - 2 * p))(c01(p2 * 1.35))           # settle on the dome early
                     zd = ZA_END * DOME_A[2] / (DOME_A[2] * ds) if ds > 0 else ZA_END   # keep dome size steady
                     z = lerp(1.6, zd, ease_in(p2))
                     c = (lerp(hx, dx, e), lerp(hy, dy, e))
-                    s = (lerp(hx, SCREEN[0], e), lerp(hy, SCREEN[1], e))
+                    s_ = (lerp(hx, SCREEN[0], e), lerp(hy, SCREEN[1], e))
                     near_b, far_b = lerp(0, 16, e), lerp(6, 0, e)
                 img = dof(fr, cv2.resize(fars[si], (fr.shape[1], fr.shape[0])), near_b * fr.shape[1] / OW / z, far_b * fr.shape[1] / OW / z)
                 roll = ROLL * ease_in(c01((tj - (TC - 0.30)) / 0.30)) ** 1.5
-                img = view(img, c[0], c[1], z, s[0], s[1], roll)
+                img = view(img, c[0], c[1], z, s_[0], s_[1], roll)
                 cm = ease_in(c01((tj - (TC - 0.35)) / 0.35))
                 if cm > 0:
                     img = img * (1 + (gainC - 1) * cm) + offC * cm
-            else:
+                return img
+
+            def side_b(tj):
                 p = c01((tj - TC) / BEAT)
                 z = lerp(ZB0, 1.0, ease_out(p))
                 roll = -ROLL * (1 - ease_out(c01((tj - TC) / 0.45)))
-                s = (lerp(SCREEN[0], DOME_B[0], ease_out(p)), lerp(SCREEN[1], DOME_B[1], ease_out(p)))
-                img = view(B.at(sB(tj)), DOME_B[0], DOME_B[1], z, s[0], s[1], roll)
+                bi = min(max(round((sB(tj) - B.ss) * FPS), 0), len(B.f) - 1)
+                bx, by = domeB[bi][0], domeB[bi][1]
+                s_ = (lerp(SCREEN[0], bx, ease_out(p)), lerp(SCREEN[1], by, ease_out(p)))
+                return view(B.at(sB(tj)), bx, by, z, s_[0], s_[1], roll)
+
+            w = (lambda q: q * q * (3 - 2 * q))(c01((tj - (TC - 0.07)) / 0.14))   # ~4-frame dissolve
+            if w <= 0:
+                img = side_a(min(tj, TC - 1e-3))
+            elif w >= 1:
+                img = side_b(max(tj, TC))
+            else:
+                img = side_a(min(tj, TC - 1e-3)) * (1 - w) + side_b(max(tj, TC)) * w
             acc += img
         img = acc / K
         enc.stdin.write(grade(np.clip(img, 0, 255)).tobytes())
