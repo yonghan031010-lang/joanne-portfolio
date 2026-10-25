@@ -49,7 +49,12 @@ def load_config(path):
     if "inset_w" in c:
         global INSET_W
         INSET_W = c["inset_w"]
+    global LINE_COLOR
+    LINE_COLOR = tuple(c["line_color"]) if "line_color" in c else None   # lines brighter than tags if set
     return [(c["clip"], c["start"], c["speed"], tuple(c["color"]), boxes)], c["beats"] * BEAT, True
+
+
+LINE_COLOR = None
 
 
 FIXED_INSETS = None
@@ -71,6 +76,8 @@ def draw_tags(img, tags):
     for text, x, yb, col, a in tags:
         w = tag_width(text)
         x = int(min(max(x, 0), OW - w)); y = int(yb - TAG_H)
+        if y < 0:                                                  # no room above: tuck inside the box
+            y = int(yb)
         d.rectangle([x, y, x + w, y + TAG_H], fill=(*col, int(255 * a)))
         d.text((x + TAG_PAD, y + TAG_PAD), text, font=FONT, fill=(255, 255, 255, int(255 * a)))
     img[:] = np.asarray(Image.alpha_composite(im, ov).convert("RGB"))
@@ -191,6 +198,7 @@ def render(src, out, outfits=None, seg=None, labels=False):
         frames = list(decode(path, ss, dur))
         H, W = frames[0].shape[:2]
         insets = place_insets(boxes, labels)
+        lcol = LINE_COLOR or col
         n = round((o + 1) * seg * FPS) - round(o * seg * FPS)
         for i in range(n):
             t = i / FPS
@@ -216,12 +224,12 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 # focus box on the garment (shrinks into place)
                 bs = 1 + 0.25 * (1 - ease_out(a))
                 x0, y0 = (cx - bw * bs / 2) * OW, (cy - bh * bs / 2) * OH
-                draw_box(img, x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH, col, ab)
+                draw_box(img, x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH, lcol, ab)
                 ix, iy, iw, ih = insets[k]
                 if labels and ab > 0:
                     lp = ease_out(c01(tk / 0.22)) * (ab / max(a, 1e-6))
                     leader(img, (x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH),
-                           (ix * OW, iy * OH, (ix + iw) * OW, (iy + ih) * OH), col, lp)
+                           (ix * OW, iy * OH, (ix + iw) * OW, (iy + ih) * OH), lcol, lp)
                     tags.append((name, x0 - LINE / 2, y0 + LINE / 2, col, ab))
                 # live magnified inset from the full-res frame, or a held frame
                 if "freeze" in opt:
@@ -235,7 +243,7 @@ def render(src, out, outfits=None, seg=None, labels=False):
                     continue
                 pw, ph = int(iw * OW * s), int(ih * OH * s)
                 patch = cv2.resize(crop, (pw, ph), interpolation=cv2.INTER_CUBIC)
-                cv2.rectangle(patch, (0, 0), (pw - 1, ph - 1), col, LINE, cv2.LINE_AA)
+                cv2.rectangle(patch, (0, 0), (pw - 1, ph - 1), lcol, LINE, cv2.LINE_AA)
                 px = int(ix * OW + (iw * OW - pw) / 2); py = int(iy * OH + (ih * OH - ph) / 2)
                 x0c, y0c = max(px, 0), max(py, 0)
                 x1c, y1c = min(px + pw, OW), min(py + ph, OH)
