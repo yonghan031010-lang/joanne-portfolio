@@ -1,8 +1,7 @@
 """C v2: the Oxford arch (IMG_4499) becomes a window onto the Great Hall (IMG_4500), 8 beats.
 
   beats 0-2  IMG_4499 slow push, the courtyard through the arch
-  beat 2     glow bounce-in: a window in the shape of the arch springs open from its centre with a
-             soft white rim, the Great Hall inside it; people standing in front of the arch stay on top
+  beat 2     bounce-in: a window in the shape of the arch springs open from its centre (soft edge, no rim), the Great Hall inside it; people standing in front of the arch stay on top
   beats 2-5  push through the arch; the hall, being "far", grows slower than the stone (parallax)
   beat 5     the arch leaves frame — we are in the hall
   beats 5-8  tilt up with a slight roll onto the hammerbeam ceiling and the great window
@@ -109,18 +108,14 @@ def main(src, out):
             return a
         wm, raw = window(t)
         V = lambda m: view(m[..., None].repeat(3, 2), CAM[0], CAM[1], z, 0.5, CAM[1], 0.0)[..., :1]
-        win, rawv = V(wm), V(raw)
+        # while it grows the window edge is feathered wide so it reads as light, not a cut-out
+        grow = 1 - smooth((t - (BT[2] + 0.15)) / 0.40)
+        if grow > 0.01:
+            wm = np.minimum(cv2.GaussianBlur(wm, (0, 0), 1 + 18 * grow), am)
+        win = V(wm)
         fp = V(front[iA(t)])
         w = win * (1 - fp)
-        h = hall_cam(t)
-        # soft white glow hugging the growing window, fading once it has settled
-        fade = 1 - smooth((t - (BT[2] + 0.25)) / 0.45)
-        halo = cv2.GaussianBlur(rawv[..., 0], (0, 0), 16)[..., None]
-        glow = np.clip(halo - rawv, 0, 1) * 1.6 * fade
-        rim = np.clip(cv2.GaussianBlur(rawv[..., 0], (0, 0), 3)[..., None] - rawv, 0, 1) * 2.5 * fade
-        img = a * (1 - w) + h * w
-        img = img + (glow * 0.55 + rim * 0.6) * np.float32([255, 248, 238]) * (1 - fp)
-        return img
+        return a * (1 - w) + hall_cam(t) * w
 
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
