@@ -7,3 +7,4 @@ renders/
 *.wav
 __pycache__/
 exports/
+models/
