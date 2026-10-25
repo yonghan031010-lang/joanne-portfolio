@@ -44,6 +44,8 @@ def load_config(path):
     boxes = [(it["label"], it["cx"], it["cy"], it["w"], it["h"]) for it in c["items"]]
     global FIXED_INSETS
     FIXED_INSETS = [it.get("inset") for it in c["items"]]          # optional [x, y] per item
+    global ITEM_OPTS
+    ITEM_OPTS = [{k: it[k] for k in ("keys", "freeze", "box_off") if k in it} for it in c["items"]]
     if "inset_w" in c:
         global INSET_W
         INSET_W = c["inset_w"]
@@ -51,6 +53,8 @@ def load_config(path):
 
 
 FIXED_INSETS = None
+ITEM_OPTS = None      # per item: keys [[t, cx, cy]...] (manual path, source-relative s),
+                      # freeze t (inset holds the frame at t), box_off t (box fades out after t)
 
 
 def tag_width(text):
@@ -204,19 +208,29 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 if tk < 0:
                     continue
                 a, s = pop(tk)
-                cx, cy = paths[k][min(si, len(paths[k]) - 1)]
+                opt = ITEM_OPTS[k] if ITEM_OPTS else {}
+                pos = lambda j: (tuple(np.interp(j / FPS, [q[0] for q in opt["keys"]], [q[i] for q in opt["keys"]]) for i in (1, 2))
+                                 if "keys" in opt else tuple(paths[k][min(j, len(paths[k]) - 1)]))
+                cx, cy = pos(si)
+                ab = a * (1 - c01((si / FPS - opt["box_off"]) / 0.2)) if "box_off" in opt else a
                 # focus box on the garment (shrinks into place)
                 bs = 1 + 0.25 * (1 - ease_out(a))
                 x0, y0 = (cx - bw * bs / 2) * OW, (cy - bh * bs / 2) * OH
-                draw_box(img, x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH, col, a)
+                draw_box(img, x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH, col, ab)
                 ix, iy, iw, ih = insets[k]
-                if labels:
+                if labels and ab > 0:
+                    lp = ease_out(c01(tk / 0.22)) * (ab / max(a, 1e-6))
                     leader(img, (x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH),
-                           (ix * OW, iy * OH, (ix + iw) * OW, (iy + ih) * OH), col, ease_out(c01(tk / 0.22)))
-                    tags.append((name, x0 - LINE / 2, y0 + LINE / 2, col, a))
-                # live magnified inset from the full-res frame
+                           (ix * OW, iy * OH, (ix + iw) * OW, (iy + ih) * OH), col, lp)
+                    tags.append((name, x0 - LINE / 2, y0 + LINE / 2, col, ab))
+                # live magnified inset from the full-res frame, or a held frame
+                if "freeze" in opt:
+                    fj = min(round(opt["freeze"] * FPS), len(frames) - 1)
+                    fsrc = frames[fj]; cx, cy = pos(fj)
+                else:
+                    fsrc = f
                 sx0, sy0 = int(max((cx - bw / 2) * W, 0)), int(max((cy - bh / 2) * H, 0))
-                crop = f[sy0:int(min(sy0 + bh * H, H)), sx0:int(min(sx0 + bw * W, W))]
+                crop = fsrc[sy0:int(min(sy0 + bh * H, H)), sx0:int(min(sx0 + bw * W, W))]
                 if crop.size == 0:
                     continue
                 pw, ph = int(iw * OW * s), int(ih * OH * s)
