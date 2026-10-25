@@ -43,13 +43,12 @@ def load_config(path):
     return [(c["clip"], c["start"], c["speed"], tuple(c["color"]), boxes)], c["beats"] * BEAT, True
 
 
-def draw_label(img, text, x, y, w, col, a):
-    """Small caps-free Helvetica-style caption centred under an inset."""
+def draw_label(img, text, x, y, w, a):
+    """Small white Helvetica-style caption centred under an inset, no shadow."""
     im = Image.fromarray(img); ov = Image.new("RGBA", im.size, (0, 0, 0, 0)); d = ImageDraw.Draw(ov)
     tw = d.textlength(text, font=FONT)
     tx, ty = x + (w - tw) / 2, y + 8
-    d.text((tx + 1.5, ty + 1.5), text, font=FONT, fill=(0, 0, 0, int(170 * a)))
-    d.text((tx, ty), text, font=FONT, fill=(*col, int(255 * a)))
+    d.text((tx, ty), text, font=FONT, fill=(255, 255, 255, int(255 * a)))
     img[:] = np.asarray(Image.alpha_composite(im.convert("RGBA"), ov).convert("RGB"))
 
 
@@ -196,7 +195,7 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 sh[:] = (sh * (1 - 0.25 * a)).astype(np.uint8)
                 region[:] = (region * (1 - a) + p * a).astype(np.uint8)
                 if labels:
-                    draw_label(img, name, ix * OW, iy * OH + ih * OH, iw * OW, col, a)
+                    draw_label(img, name, ix * OW, iy * OH + ih * OH, iw * OW, a)
             enc.stdin.write(grade(img.astype(np.float32)).tobytes())
             total += 1
         print(clip, n, "frames; insets", [tuple(round(v, 2) for v in r) for r in insets], flush=True)
