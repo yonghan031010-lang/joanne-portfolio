@@ -212,7 +212,7 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 ix, iy, iw, ih = insets[k]
                 if labels:
                     leader(img, (x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH),
-                           (ix * OW, iy * OH - TAG_H, (ix + iw) * OW, (iy + ih) * OH), col, ease_out(c01(tk / 0.22)))
+                           (ix * OW, iy * OH, (ix + iw) * OW, (iy + ih) * OH), col, ease_out(c01(tk / 0.22)))
                     tags.append((name, x0 - LINE / 2, y0 + LINE / 2, col, a))
                 # live magnified inset from the full-res frame
                 sx0, sy0 = int(max((cx - bw / 2) * W, 0)), int(max((cy - bh / 2) * H, 0))
@@ -231,8 +231,6 @@ def render(src, out, outfits=None, seg=None, labels=False):
                     sh = img[min(y0c + 8, OH - 1):min(y1c + 8, OH), min(x0c + 8, OW - 1):min(x1c + 8, OW)]
                     sh[:] = (sh * (1 - 0.25 * a)).astype(np.uint8)
                 region[:] = (region * (1 - a) + p * a).astype(np.uint8)
-                if labels:
-                    tags.append((name, px - LINE / 2, py + LINE / 2, col, a))
             draw_tags(img, tags)
             enc.stdin.write(grade(img.astype(np.float32)).tobytes())
             total += 1
