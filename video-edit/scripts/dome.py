@@ -1,8 +1,8 @@
 """IMG_4704 → IMG_4781 on St Paul's dome.
 
 Push in on the outfit, rack focus from her (and the room) to the dome through the window,
-then a clockwise roll with rotating god rays + a diagonal light sweep + bloom hands over to
-IMG_4781 with the dome held at the same place and size, unwinding into the walk.
+then a fast clockwise camera roll (real rotational motion blur, no added light) hands over
+to IMG_4781 with the dome held at the same place and size, unwinding into the walk.
 
 usage: python3 dome.py <source_dir> <out.mp4>
 """
@@ -10,7 +10,7 @@ import sys, subprocess, math
 import numpy as np, cv2, mediapipe as mp
 from mediapipe.tasks.python import vision, BaseOptions
 from vcam import OW, OH, FPS, BEAT, grade, c01, lerp, ease_in, ease_out
-from vcam2 import Clip
+from vcam2 import Clip, match_stats
 
 MODEL = __file__.rsplit("/", 2)[0] + "/models/selfie_multiclass.tflite"
 HER = (0.55, 0.50)            # her centre in IMG_4704 (frame fractions)
@@ -142,13 +142,16 @@ def main(src, out):
     dome_px = DOME_A[2] * ZA_END
     ZB0 = dome_px / DOME_B[2]
 
+    # white balance drifts toward IMG_4781 while the camera spins (no added light)
+    gainC, offC = match_stats(A.f[min(round((sA(TC) - A.ss) * FPS), len(A.f) - 1)].astype(np.float32),
+                              B.at(sB(TC)), 0.6)
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
                             "-pix_fmt", "yuv420p", out], stdin=subprocess.PIPE)
     for i in range(n):
         t = i / FPS
-        K = 6 if abs(t - TC) < 0.35 else 2
-        sh = 0.5 + 0.6 * math.exp(-((t - TC) / 0.2) ** 2)
+        K = 12 if abs(t - TC) < 0.35 else 3
+        sh = 0.5 + 1.2 * math.exp(-((t - TC) / 0.18) ** 2)      # longer shutter only while spinning
         acc = np.zeros((OH, OW, 3), np.float32)
         for j in range(K):
             tj = t + (j / max(K - 1, 1) - 0.5) * sh / FPS
@@ -169,8 +172,11 @@ def main(src, out):
                     s = (lerp(hx, SCREEN[0], e), lerp(hy, SCREEN[1], e))
                     near_b, far_b = lerp(0, 16, e), lerp(6, 0, e)
                 img = dof(fr, cv2.resize(fars[si], (fr.shape[1], fr.shape[0])), near_b * fr.shape[1] / OW / z, far_b * fr.shape[1] / OW / z)
-                roll = ROLL * ease_in(c01((tj - (TC - 0.30)) / 0.30))
+                roll = ROLL * ease_in(c01((tj - (TC - 0.30)) / 0.30)) ** 1.5
                 img = view(img, c[0], c[1], z, s[0], s[1], roll)
+                cm = ease_in(c01((tj - (TC - 0.35)) / 0.35))
+                if cm > 0:
+                    img = img * (1 + (gainC - 1) * cm) + offC * cm
             else:
                 p = c01((tj - TC) / BEAT)
                 z = lerp(ZB0, 1.0, ease_out(p))
@@ -179,15 +185,6 @@ def main(src, out):
                 img = view(B.at(sB(tj)), DOME_B[0], DOME_B[1], z, s[0], s[1], roll)
             acc += img
         img = acc / K
-        # light: rotating rays from the dome, a diagonal sweep and a bloom flash around the hand-off
-        k = math.exp(-((t - TC) / 0.12) ** 2)
-        k_rays = math.exp(-((t - TC) / 0.40) ** 2)
-        light = god_rays(SCREEN[0] * OW, (SCREEN[1] - 0.05) * OH, t * 5.0, 0.55 * k_rays)
-        light += sweep(lerp(-0.9, 0.9, c01((t - (TC - 0.30)) / 0.60)), 0.7 * math.exp(-((t - TC) / 0.25) ** 2))
-        img = img * (1 + 0.25 * k) + (light[..., None] * warm * 255 * 0.45)
-        if k > 0.05:                                            # bloom: glow the highlights
-            hi = np.clip(img - 215, 0, None)
-            img = img + cv2.GaussianBlur(hi, (0, 0), 25) * 0.8 * k
         enc.stdin.write(grade(np.clip(img, 0, 255)).tobytes())
     enc.stdin.close(); enc.wait()
     print("frames", n, "dome zoom A %.2f → B %.2f" % (ZA_END, ZB0))
