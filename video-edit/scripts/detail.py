@@ -33,23 +33,43 @@ OUTFITS = [
 SEG = 7 * BEAT          # ≈5.06s per outfit, so every cut still lands on a beat
 INSET_W = 0.32
 LINE = 3
-LABEL_H = 0.028                        # room under an inset for its name
-FONT = ImageFont.truetype("/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf", 33)  # Helvetica metrics
+FONT = ImageFont.truetype(__file__.rsplit("/", 2)[0] + "/fonts/PressStart2P-Regular.ttf", 16)  # 8px grid ×2, crisp
+TAG_PAD = 8
+TAG_H = 16 + 2 * TAG_PAD               # px
+LABEL_H = TAG_H / OH                   # room above an inset for its tag
 
 
 def load_config(path):
     c = json.load(open(path))
     boxes = [(it["label"], it["cx"], it["cy"], it["w"], it["h"]) for it in c["items"]]
+    global FIXED_INSETS
+    FIXED_INSETS = [it.get("inset") for it in c["items"]]          # optional [x, y] per item
+    if "inset_w" in c:
+        global INSET_W
+        INSET_W = c["inset_w"]
     return [(c["clip"], c["start"], c["speed"], tuple(c["color"]), boxes)], c["beats"] * BEAT, True
 
 
-def draw_label(img, text, x, y, w, a):
-    """Small white Helvetica-style caption centred under an inset, no shadow."""
-    im = Image.fromarray(img); ov = Image.new("RGBA", im.size, (0, 0, 0, 0)); d = ImageDraw.Draw(ov)
-    tw = d.textlength(text, font=FONT)
-    tx, ty = x + (w - tw) / 2, y + 8
-    d.text((tx, ty), text, font=FONT, fill=(255, 255, 255, int(255 * a)))
-    img[:] = np.asarray(Image.alpha_composite(im.convert("RGBA"), ov).convert("RGB"))
+FIXED_INSETS = None
+
+
+def tag_width(text):
+    return int(FONT.getlength(text)) + 2 * TAG_PAD
+
+
+def draw_tags(img, tags):
+    """Filled name tags (white pixel text) sitting on the top-left edge of a box.
+    tags: [(text, x_left, y_bottom, colour, alpha)]"""
+    if not tags:
+        return
+    im = Image.fromarray(img).convert("RGBA"); ov = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov); d.fontmode = "1"                   # no anti-aliasing: hard pixel edges
+    for text, x, yb, col, a in tags:
+        w = tag_width(text)
+        x = int(min(max(x, 0), OW - w)); y = int(yb - TAG_H)
+        d.rectangle([x, y, x + w, y + TAG_H], fill=(*col, int(255 * a)))
+        d.text((x + TAG_PAD, y + TAG_PAD), text, font=FONT, fill=(255, 255, 255, int(255 * a)))
+    img[:] = np.asarray(Image.alpha_composite(im, ov).convert("RGB"))
 
 
 def probe(path):
@@ -109,19 +129,23 @@ def track(path, ss, dur, boxes):
 
 def place_insets(boxes, label=False):
     """Greedy slot choice: minimise overlap with every box and earlier insets."""
-    cands = [(x, y) for x in (0.03, 0.65) for y in np.arange(0.04, 0.78, 0.01)]
+    cands = [(x, y) for x in (0.03, 0.65) for y in np.arange(0.05, 0.80, 0.01)]
     taken, res = [], []
     rects = [(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2) for _, cx, cy, w, h in boxes]
     for (_, cx, cy, w, h) in boxes:
         iw = INSET_W; ih = min(iw * (h * OH) / (w * OW) * OW / OH, 0.22)
         lh = LABEL_H if label else 0
         def cost(c):
-            r = (c[0], c[1], c[0] + iw, c[1] + ih + lh)
+            r = (c[0], c[1] - lh, c[0] + iw, c[1] + ih)
             ov = lambda a, b: max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
             side = 0.02 if (c[0] < 0.5) == (cx < 0.5) else 0.0          # prefer the opposite side
-            return sum(ov(r, q) for q in rects) * 4 + sum(ov(r, q) for q in taken) * 40 + side + abs(c[1] + ih / 2 - cy) * 0.05
-        c = min(cands, key=cost)
-        taken.append((c[0], c[1], c[0] + iw, c[1] + ih + lh)); res.append((c[0], c[1], iw, ih))
+            g = 0.018                                                     # breathing room between insets
+            rg = (r[0] - g, r[1] - g, r[2] + g, r[3] + g)
+            vert = abs(c[1] + ih / 2 - cy) * (0.6 if label else 0.05)     # stay level with the item
+            return sum(ov(r, q) for q in rects) * 4 + sum(ov(rg, q) for q in taken) * 40 + side + vert
+        fixed = FIXED_INSETS[len(res)] if FIXED_INSETS else None
+        c = tuple(fixed) if fixed else min(cands, key=cost)
+        taken.append((c[0], c[1] - lh, c[0] + iw, c[1] + ih)); res.append((c[0], c[1], iw, ih))
     return res
 
 
@@ -130,10 +154,18 @@ def draw_box(img, x0, y0, x1, y1, col, a):
         return
     ov = img.copy()
     cv2.rectangle(ov, (int(x0), int(y0)), (int(x1), int(y1)), col, LINE, cv2.LINE_AA)
-    mx, my, t = (x0 + x1) / 2, (y0 + y1) / 2, 16
-    for (p, q) in [((mx, y0), (mx, y0 + t)), ((mx, y1), (mx, y1 - t)), ((x0, my), (x0 + t, my)), ((x1, my), (x1 - t, my))]:
-        cv2.line(ov, (int(p[0]), int(p[1])), (int(q[0]), int(q[1])), col, LINE, cv2.LINE_AA)
     cv2.addWeighted(ov, a, img, 1 - a, 0, img)
+
+
+def leader(img, box, ins, col, p):
+    """Thin line from the garment box to its inset (nearest corners), drawn out over p∈[0,1]."""
+    if p <= 0:
+        return
+    cb = [(box[0], box[1]), (box[2], box[1]), (box[0], box[3]), (box[2], box[3])]
+    ci = [(ins[0], ins[1]), (ins[2], ins[1]), (ins[0], ins[3]), (ins[2], ins[3])]
+    a, b = min(((u, v) for u in cb for v in ci), key=lambda uv: (uv[0][0] - uv[1][0]) ** 2 + (uv[0][1] - uv[1][1]) ** 2)
+    e = (a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p)
+    cv2.line(img, (int(a[0]), int(a[1])), (int(e[0]), int(e[1])), col, 2, cv2.LINE_AA)
 
 
 def pop(t):
@@ -166,6 +198,7 @@ def render(src, out, outfits=None, seg=None, labels=False):
             if z > 1.001:
                 M = cv2.getRotationMatrix2D((OW / 2, OH / 2), 0, z)
                 img = cv2.warpAffine(img, M, (OW, OH), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+            tags = []
             for k, (name, _, _, bw, bh) in enumerate(boxes):
                 tk = t - (k + 1) * BEAT                     # exact beat
                 if tk < 0:
@@ -176,8 +209,12 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 bs = 1 + 0.25 * (1 - ease_out(a))
                 x0, y0 = (cx - bw * bs / 2) * OW, (cy - bh * bs / 2) * OH
                 draw_box(img, x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH, col, a)
-                # live magnified inset from the full-res frame
                 ix, iy, iw, ih = insets[k]
+                if labels:
+                    leader(img, (x0, y0, x0 + bw * bs * OW, y0 + bh * bs * OH),
+                           (ix * OW, iy * OH - TAG_H, (ix + iw) * OW, (iy + ih) * OH), col, ease_out(c01(tk / 0.22)))
+                    tags.append((name, x0 - LINE / 2, y0 + LINE / 2, col, a))
+                # live magnified inset from the full-res frame
                 sx0, sy0 = int(max((cx - bw / 2) * W, 0)), int(max((cy - bh / 2) * H, 0))
                 crop = f[sy0:int(min(sy0 + bh * H, H)), sx0:int(min(sx0 + bw * W, W))]
                 if crop.size == 0:
@@ -190,12 +227,13 @@ def render(src, out, outfits=None, seg=None, labels=False):
                 x1c, y1c = min(px + pw, OW), min(py + ph, OH)
                 region = img[y0c:y1c, x0c:x1c]
                 p = patch[y0c - py:y1c - py, x0c - px:x1c - px]
-                # soft shadow then the inset
-                sh = img[min(y0c + 8, OH - 1):min(y1c + 8, OH), min(x0c + 8, OW - 1):min(x1c + 8, OW)]
-                sh[:] = (sh * (1 - 0.25 * a)).astype(np.uint8)
+                if not labels:                                   # soft shadow (v1 look only)
+                    sh = img[min(y0c + 8, OH - 1):min(y1c + 8, OH), min(x0c + 8, OW - 1):min(x1c + 8, OW)]
+                    sh[:] = (sh * (1 - 0.25 * a)).astype(np.uint8)
                 region[:] = (region * (1 - a) + p * a).astype(np.uint8)
                 if labels:
-                    draw_label(img, name, ix * OW, iy * OH + ih * OH, iw * OW, a)
+                    tags.append((name, px - LINE / 2, py + LINE / 2, col, a))
+            draw_tags(img, tags)
             enc.stdin.write(grade(img.astype(np.float32)).tobytes())
             total += 1
         print(clip, n, "frames; insets", [tuple(round(v, 2) for v in r) for r in insets], flush=True)
